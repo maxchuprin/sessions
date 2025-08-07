@@ -2,7 +2,6 @@ package sessions
 
 import (
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt"
@@ -35,11 +34,12 @@ type Session struct {
 	Expired time.Time
 }
 
-func New(secret []byte, accessTimeout time.Duration, refreshTimeout time.Duration, store SessionStore) Sessions {
+func New(secret []byte, accessTimeout time.Duration, refreshTimeout time.Duration, secure bool, store SessionStore) Sessions {
 	return &sessions{
 		Secret:         secret,
 		AccessTimeout:  accessTimeout,
 		RefreshTimeout: refreshTimeout,
+		Secure:         secure,
 		Store:          store,
 	}
 }
@@ -48,6 +48,7 @@ type sessions struct {
 	Secret         []byte
 	AccessTimeout  time.Duration
 	RefreshTimeout time.Duration
+	Secure         bool
 	Store          SessionStore
 }
 
@@ -74,53 +75,31 @@ func (s *sessions) Stop(c echo.Context) error {
 	return nil
 }
 
-var refreshLocks sync.Map
-
 func (s *sessions) Refresh(c echo.Context) error {
 	cookie, err := c.Cookie("session")
 	if err != nil || cookie == nil {
 		return echo.ErrUnauthorized
 	}
 
-	token := cookie.Value
-
-	mutexIface, _ := refreshLocks.LoadOrStore(token, &sync.Mutex{})
-	mutex := mutexIface.(*sync.Mutex)
-
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	current, err := s.Store.Read(token)
+	current, err := s.Store.Read(cookie.Value)
 	if err != nil {
-		s.clearCookies(c)
-		return echo.ErrUnauthorized
-	}
-
-	if time.Now().Before(current.Expired) {
-		claims := current.Claims
-		claims["exp"] = time.Now().Add(s.AccessTimeout).Unix()
-
-		access, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.Secret)
-		if err != nil {
-			s.clearCookies(c)
-			return echo.ErrUnauthorized
-		}
-
-		s.setCookies(c, access, current.Token)
-
-		uri := "/" + c.Param("uri")
-		return c.Redirect(http.StatusTemporaryRedirect, uri)
+		return err
 	}
 
 	if err := s.Store.Delete(current.Token); err != nil {
 		c.Logger().Info("Sessions.Refresh: Ошибка удаления сессии из SessionStore")
 	}
 
-	s.clearCookies(c)
+	if time.Now().After(current.Expired) {
+		s.clearCookies(c)
+		return echo.ErrUnauthorized
+	}
+
+	// TODO Проверить Device
 
 	err = s.start(c, current.Claims)
 	if err != nil {
-		return echo.ErrUnauthorized
+		return err
 	}
 
 	uri := "/" + c.Param("uri")
@@ -164,7 +143,7 @@ func (s *sessions) setCookies(c echo.Context, accessToken string, refreshToken s
 		Domain:   c.Request().Host,
 		Path:     "/auth",
 		HttpOnly: true,
-		Secure:   c.Request().Host != "localhost",
+		Secure:   s.Secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -176,7 +155,7 @@ func (s *sessions) setCookies(c echo.Context, accessToken string, refreshToken s
 		Domain:   c.Request().Host,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   c.Request().Host != "localhost",
+		Secure:   s.Secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -190,7 +169,7 @@ func (s *sessions) clearCookies(c echo.Context) {
 		Domain:   c.Request().Host,
 		Path:     "/auth",
 		HttpOnly: true,
-		Secure:   c.Request().Host != "localhost",
+		Secure:   s.Secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -202,7 +181,7 @@ func (s *sessions) clearCookies(c echo.Context) {
 		Domain:   c.Request().Host,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   c.Request().Host != "localhost",
+		Secure:   s.Secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
