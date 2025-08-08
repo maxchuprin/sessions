@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt"
@@ -75,31 +76,53 @@ func (s *sessions) Stop(c echo.Context) error {
 	return nil
 }
 
+var refreshLocks sync.Map
+
 func (s *sessions) Refresh(c echo.Context) error {
 	cookie, err := c.Cookie("session")
 	if err != nil || cookie == nil {
 		return echo.ErrUnauthorized
 	}
 
-	current, err := s.Store.Read(cookie.Value)
+	token := cookie.Value
+
+	mutexIface, _ := refreshLocks.LoadOrStore(token, &sync.Mutex{})
+	mutex := mutexIface.(*sync.Mutex)
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	current, err := s.Store.Read(token)
 	if err != nil {
-		return err
+		s.clearCookies(c)
+		return echo.ErrUnauthorized
+	}
+
+	if time.Now().Before(current.Expired) {
+		claims := current.Claims
+		claims["exp"] = time.Now().Add(s.AccessTimeout).Unix()
+
+		access, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.Secret)
+		if err != nil {
+			s.clearCookies(c)
+			return echo.ErrUnauthorized
+		}
+
+		s.setCookies(c, access, current.Token)
+
+		uri := "/" + c.Param("uri")
+		return c.Redirect(http.StatusTemporaryRedirect, uri)
 	}
 
 	if err := s.Store.Delete(current.Token); err != nil {
 		c.Logger().Info("Sessions.Refresh: Ошибка удаления сессии из SessionStore")
 	}
 
-	if time.Now().After(current.Expired) {
-		s.clearCookies(c)
-		return echo.ErrUnauthorized
-	}
-
-	// TODO Проверить Device
+	s.clearCookies(c)
 
 	err = s.start(c, current.Claims)
 	if err != nil {
-		return err
+		return echo.ErrUnauthorized
 	}
 
 	uri := "/" + c.Param("uri")
