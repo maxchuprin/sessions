@@ -11,7 +11,7 @@ import (
 )
 
 type Sessions interface {
-	Start(c echo.Context, claims jwt.MapClaims) error
+	Start(c echo.Context, claims jwt.MapClaims, deviceID string) error
 	Stop(c echo.Context) error
 	Refresh(c echo.Context) error
 }
@@ -25,6 +25,7 @@ type SessionStore interface {
 type Device struct {
 	IP        string
 	UserAgent string
+	DeviceID  string
 }
 
 type Session struct {
@@ -53,7 +54,7 @@ type sessions struct {
 	Store          SessionStore
 }
 
-func (s *sessions) Start(c echo.Context, claims jwt.MapClaims) error {
+func (s *sessions) Start(c echo.Context, claims jwt.MapClaims, deviceID string) error {
 	current, err := c.Cookie("session")
 	if err == nil && current != nil {
 		if err := s.Store.Delete(current.Value); err != nil {
@@ -61,7 +62,7 @@ func (s *sessions) Start(c echo.Context, claims jwt.MapClaims) error {
 		}
 	}
 
-	return s.start(c, claims)
+	return s.start(c, claims, deviceID)
 }
 
 func (s *sessions) Stop(c echo.Context) error {
@@ -120,7 +121,7 @@ func (s *sessions) Refresh(c echo.Context) error {
 
 	s.clearCookies(c)
 
-	err = s.start(c, current.Claims)
+	err = s.start(c, current.Claims, current.Device.DeviceID)
 	if err != nil {
 		return echo.ErrUnauthorized
 	}
@@ -129,7 +130,7 @@ func (s *sessions) Refresh(c echo.Context) error {
 	return c.Redirect(http.StatusTemporaryRedirect, uri)
 }
 
-func (s *sessions) start(c echo.Context, claims jwt.MapClaims) error {
+func (s *sessions) start(c echo.Context, claims jwt.MapClaims, deviceID string) error {
 	claims["exp"] = time.Now().Add(s.AccessTimeout).Unix()
 
 	access, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.Secret)
@@ -143,6 +144,7 @@ func (s *sessions) start(c echo.Context, claims jwt.MapClaims) error {
 		Device: Device{
 			IP:        c.Request().RemoteAddr,
 			UserAgent: c.Request().UserAgent(),
+			DeviceID:  deviceID,
 		},
 		Created: time.Now(),
 		Expired: time.Now().Add(s.RefreshTimeout),

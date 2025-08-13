@@ -88,7 +88,7 @@ func TestStart(t *testing.T) {
 
 		claims := jwt.MapClaims{"Name": "Jhon Doe"}
 
-		err := h.Start(c, claims)
+		err := h.Start(c, claims, "ad3d99sn927dh208")
 
 		mSessionStore.AssertExpectations(t)
 
