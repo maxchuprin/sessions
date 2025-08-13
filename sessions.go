@@ -98,6 +98,7 @@ func (s *sessions) Refresh(c echo.Context) error {
 		s.clearCookies(c)
 		return echo.ErrUnauthorized
 	}
+	deviceID := current.Device.DeviceID
 
 	if time.Now().Before(current.Expired) {
 		claims := current.Claims
@@ -121,7 +122,7 @@ func (s *sessions) Refresh(c echo.Context) error {
 
 	s.clearCookies(c)
 
-	err = s.start(c, current.Claims, current.Device.DeviceID)
+	err = s.start(c, current.Claims, deviceID)
 	if err != nil {
 		return echo.ErrUnauthorized
 	}
