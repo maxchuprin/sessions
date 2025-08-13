@@ -79,6 +79,59 @@ func (s *sessions) Stop(c echo.Context) error {
 
 var refreshLocks sync.Map
 
+//todo delete
+//func (s *sessions) Refresh(c echo.Context) error {
+//	cookie, err := c.Cookie("session")
+//	if err != nil || cookie == nil {
+//		return echo.ErrUnauthorized
+//	}
+//
+//	token := cookie.Value
+//
+//	mutexIface, _ := refreshLocks.LoadOrStore(token, &sync.Mutex{})
+//	mutex := mutexIface.(*sync.Mutex)
+//
+//	mutex.Lock()
+//	defer mutex.Unlock()
+//
+//	current, err := s.Store.Read(token)
+//	if err != nil {
+//		s.clearCookies(c)
+//		return echo.ErrUnauthorized
+//	}
+//	deviceID := current.Device.DeviceID
+//
+//	if time.Now().Before(current.Expired) {
+//		claims := current.Claims
+//		claims["exp"] = time.Now().Add(s.AccessTimeout).Unix()
+//
+//		access, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.Secret)
+//		if err != nil {
+//			s.clearCookies(c)
+//			return echo.ErrUnauthorized
+//		}
+//
+//		s.setCookies(c, access, current.Token)
+//
+//		uri := "/" + c.Param("uri")
+//		return c.Redirect(http.StatusTemporaryRedirect, uri)
+//	}
+//
+//	if err := s.Store.Delete(current.Token); err != nil {
+//		c.Logger().Info("Sessions.Refresh: Ошибка удаления сессии из SessionStore")
+//	}
+//
+//	s.clearCookies(c)
+//
+//	err = s.start(c, current.Claims, deviceID)
+//	if err != nil {
+//		return echo.ErrUnauthorized
+//	}
+//
+//	uri := "/" + c.Param("uri")
+//	return c.Redirect(http.StatusTemporaryRedirect, uri)
+//}
+
 func (s *sessions) Refresh(c echo.Context) error {
 	cookie, err := c.Cookie("session")
 	if err != nil || cookie == nil {
@@ -96,36 +149,27 @@ func (s *sessions) Refresh(c echo.Context) error {
 	current, err := s.Store.Read(token)
 	if err != nil {
 		s.clearCookies(c)
-		return echo.ErrUnauthorized
-	}
-	deviceID := current.Device.DeviceID
-
-	if time.Now().Before(current.Expired) {
-		claims := current.Claims
-		claims["exp"] = time.Now().Add(s.AccessTimeout).Unix()
-
-		access, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.Secret)
-		if err != nil {
-			s.clearCookies(c)
-			return echo.ErrUnauthorized
-		}
-
-		s.setCookies(c, access, current.Token)
-
-		uri := "/" + c.Param("uri")
-		return c.Redirect(http.StatusTemporaryRedirect, uri)
+		// Токен полностью отсутствует → удалён другим входом
+		return echo.NewHTTPError(http.StatusUnauthorized, "Вход выполнен с другого устройства")
 	}
 
-	if err := s.Store.Delete(current.Token); err != nil {
-		c.Logger().Info("Sessions.Refresh: Ошибка удаления сессии из SessionStore")
+	// Здесь токен есть — проверяем срок жизни
+	if time.Now().After(current.Expired) {
+		s.clearCookies(c)
+		return echo.NewHTTPError(http.StatusUnauthorized, "Срок действия сессии истёк")
 	}
 
-	s.clearCookies(c)
+	// Токен жив → обновляем access
+	claims := current.Claims
+	claims["exp"] = time.Now().Add(s.AccessTimeout).Unix()
 
-	err = s.start(c, current.Claims, deviceID)
+	access, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.Secret)
 	if err != nil {
+		s.clearCookies(c)
 		return echo.ErrUnauthorized
 	}
+
+	s.setCookies(c, access, current.Token)
 
 	uri := "/" + c.Param("uri")
 	return c.Redirect(http.StatusTemporaryRedirect, uri)
